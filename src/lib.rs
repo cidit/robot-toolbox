@@ -71,13 +71,14 @@ pub mod stats {
 }
 
 pub mod angles {
+    // TODO: consider winding angles properly.
 
     use core::marker::PhantomData;
 
-    pub trait Unit: Copy + Clone {
+    pub trait Unit: Copy + Clone + Sized {
         fn half() -> f32;
 
-        fn convert<OU: Unit>(value: f32) -> f32 {
+        fn from<OU: Unit>(value: f32) -> f32 {
             value / OU::half() * Self::half()
         }
     }
@@ -106,7 +107,7 @@ pub mod angles {
         }
     }
 
-    pub trait Domain: Copy + Clone {
+    pub trait Domain: Copy + Clone + Sized {
         fn max<U: Unit>() -> f32;
         fn min<U: Unit>() -> f32;
         fn normalize<U: Unit>(value: f32) -> f32 {
@@ -145,36 +146,18 @@ pub mod angles {
     }
 
     /**
+     * an angle.
+     * internally, always represented as a radian. // TODO: represent as x y? but then, could lead to inconsistencies
      * @brief An angle that is expected to be winding. to get the unwound version, use `.normalize()`.
      */
-    pub struct Angle<D: Domain, U: Unit> {
+    pub struct Angle<D: Domain> {
         value: f32,
-        type_metadata: PhantomData<(D, U)>,
+        type_metadata: PhantomData<D>,
     }
 
-    pub fn radians(value: f32) -> Angle<Principal, Radians> {
-        Angle::<Principal, Radians> {
-            value,
-            type_metadata: PhantomData,
-        }
-    }
-    pub fn degrees(value: f32) -> Angle<Principal, Degrees> {
-        Angle::<Principal, Degrees> {
-            value,
-            type_metadata: PhantomData,
-        }
-    }
-    pub fn turns(value: f32) -> Angle<Principal, Turns> {
-        Angle::<Principal, Turns> {
-            value,
-            type_metadata: PhantomData,
-        }
-    }
-
-    impl<D, U> Angle<D, U>
+    impl<D> Angle<D>
     where
         D: Domain,
-        U: Unit,
     {
         pub fn parts(&self) -> (f32, f32) {
             (libm::cosf(self.value), libm::sinf(self.value))
@@ -184,66 +167,38 @@ pub mod angles {
             self.value
         }
 
-        pub fn max() -> f32 {
-            D::max::<U>()
-        }
-
-        pub fn min() -> f32 {
-            D::min::<U>()
-        }
-
-        pub fn normalize(&self) -> Self {
-            Self {
-                value: D::normalize::<U>(self.value),
-                type_metadata: PhantomData,
-            }
-        }
-
-        pub fn travel(&self, destination: &Self) -> Angle<Centered, U> {
-            Angle::<Centered, U> {
+        pub fn travel(&self, destination: &Self) -> Angle<Centered> {
+            Angle::<Centered> {
                 value: destination.value - self.value,
                 type_metadata: PhantomData,
             }
         }
 
-        pub fn redefine<TD: Domain>(&self) -> Angle<TD, U> {
+        pub fn redefine<TD: Domain>(&self) -> Angle<TD> {
             // i realized that the only thing that changes when
             // changing domain is the normalization behaviour,
             // so this is just a helper to translate the types.
-            Angle::<TD, U> {
+            Angle::<TD> {
                 value: self.value,
                 type_metadata: PhantomData,
             }
         }
 
-        pub fn convert<TU: Unit>(&self) -> Angle<D, TU> {
-            Angle::<D, TU> {
-                value: U::convert::<TU>(self.value),
-                type_metadata: PhantomData,
-            }
-        }
-    }
-
-    impl<D: Domain, U: Unit> From<f32> for Angle<D, U> {
-        fn from(value: f32) -> Self {
+        pub fn from<U: Unit>(value: f32) -> Self {
             Self {
-                value,
-                type_metadata: PhantomData,
+                value: <Radians as Unit>::from::<U>(value),
+                type_metadata: PhantomData
             }
         }
     }
 
     pub struct AngleMovingAverage {
-        // alpha: f32,
-        // avg_x: f32,
-        // avg_y: f32,
-        // init: bool,
         x: crate::stats::FloatingPointEMA,
         y: crate::stats::FloatingPointEMA,
     }
 
     impl crate::stats::ExponentialMovingAverage for AngleMovingAverage {
-        type Output = Angle<Centered, Radians>;
+        type Output = Angle<Centered>; // FIXME: not winding, actually!!!
         fn new(alpha: crate::stats::Magnitude) -> Self {
             Self {
                 x: crate::stats::FloatingPointEMA::new(alpha),
@@ -252,8 +207,7 @@ pub mod angles {
         }
 
         fn add(&mut self, v: Self::Output) {
-            // FIXME: currently always normalizes input, but shouldnt it not for winding angles?
-            let (x, y) = v.normalize().parts();
+            let (x, y) = v.parts();
             self.x.add(x);
             self.y.add(y);
         }
@@ -262,7 +216,7 @@ pub mod angles {
             let x = self.x.calc()?;
             let y = self.y.calc()?;
 
-            Some(radians(libm::atan2f(y, x)).redefine())
+            Some(Self::Output::from::<Radians>(libm::atan2f(y, x)).redefine())
         }
 
         fn alpha(&self) -> crate::stats::Magnitude {
